@@ -1,121 +1,115 @@
-;; Provider Identity Contract
-;; Manages practitioner profiles in a decentralized healthcare credentialing system
+;; Education Verification Contract
+;; Validates medical training credentials in a decentralized healthcare credentialing system
 
 ;; Data Maps
-(define-map providers
-  { provider-id: principal }
+(define-map education-credentials
+  { provider-id: principal, credential-id: uint }
   {
-    name: (string-utf8 100),
-    specialty: (string-utf8 100),
-    contact-info: (string-utf8 200),
-    profile-hash: (buff 32),
-    active: bool,
+    institution: (string-utf8 100),
+    degree: (string-utf8 100),
+    field: (string-utf8 100),
+    year-completed: uint,
+    credential-hash: (buff 32),
+    verified: bool,
+    verifier: (optional principal),
     created-at: uint,
-    updated-at: uint
+    verified-at: (optional uint)
   }
 )
 
-;; Provider Registration
-(define-public (register-provider
-                (name (string-utf8 100))
-                (specialty (string-utf8 100))
-                (contact-info (string-utf8 200))
-                (profile-hash (buff 32)))
+(define-map provider-credential-count
+  { provider-id: principal }
+  { count: uint }
+)
+
+;; Provider Identity Contract
+(define-constant provider-identity-contract .provider-identity)
+
+;; Add Education Credential
+(define-public (add-credential
+                (institution (string-utf8 100))
+                (degree (string-utf8 100))
+                (field (string-utf8 100))
+                (year-completed uint)
+                (credential-hash (buff 32)))
   (let ((provider-id tx-sender)
-        (current-time (unwrap-panic (get-block-info? time (- block-height u1)))))
-    (asserts! (is-none (map-get? providers {provider-id: provider-id})) (err u1)) ;; Provider already exists
-    (map-set providers
-      {provider-id: provider-id}
+        (current-time (unwrap-panic (get-block-info? time (- block-height u1))))
+        (provider-active (contract-call? provider-identity-contract is-provider-active provider-id))
+        (credential-count-data (default-to {count: u0} (map-get? provider-credential-count {provider-id: provider-id})))
+        (credential-id (+ (get count credential-count-data) u1)))
+
+    ;; Check if provider is active
+    (asserts! (is-ok provider-active) (err u1))
+    (asserts! (unwrap! provider-active (err u1)) (err u2)) ;; Provider must be active
+
+    ;; Add credential
+    (map-set education-credentials
+      {provider-id: provider-id, credential-id: credential-id}
       {
-        name: name,
-        specialty: specialty,
-        contact-info: contact-info,
-        profile-hash: profile-hash,
-        active: true,
+        institution: institution,
+        degree: degree,
+        field: field,
+        year-completed: year-completed,
+        credential-hash: credential-hash,
+        verified: false,
+        verifier: none,
         created-at: current-time,
-        updated-at: current-time
+        verified-at: none
       }
     )
-    (ok provider-id)
-  )
-)
 
-;; Update Provider Profile
-(define-public (update-provider
-                (name (string-utf8 100))
-                (specialty (string-utf8 100))
-                (contact-info (string-utf8 200))
-                (profile-hash (buff 32)))
-  (let ((provider-id tx-sender)
-        (current-time (unwrap-panic (get-block-info? time (- block-height u1))))
-        (existing-provider (unwrap! (map-get? providers {provider-id: provider-id}) (err u2)))) ;; Provider not found
-    (map-set providers
+    ;; Update credential count
+    (map-set provider-credential-count
       {provider-id: provider-id}
-      {
-        name: name,
-        specialty: specialty,
-        contact-info: contact-info,
-        profile-hash: profile-hash,
-        active: (get active existing-provider),
-        created-at: (get created-at existing-provider),
-        updated-at: current-time
-      }
+      {count: credential-id}
     )
-    (ok provider-id)
+
+    (ok credential-id)
   )
 )
 
-;; Deactivate Provider
-(define-public (deactivate-provider)
-  (let ((provider-id tx-sender)
+;; Verify Education Credential (by authorized verifier)
+(define-public (verify-credential (provider-id principal) (credential-id uint))
+  (let ((verifier-id tx-sender)
         (current-time (unwrap-panic (get-block-info? time (- block-height u1))))
-        (existing-provider (unwrap! (map-get? providers {provider-id: provider-id}) (err u2)))) ;; Provider not found
-    (map-set providers
-      {provider-id: provider-id}
+        (credential (unwrap! (map-get? education-credentials {provider-id: provider-id, credential-id: credential-id}) (err u3)))) ;; Credential not found
+
+    ;; In a real implementation, we would check if verifier is authorized
+    ;; For simplicity, we're allowing any principal to verify
+
+    (map-set education-credentials
+      {provider-id: provider-id, credential-id: credential-id}
       {
-        name: (get name existing-provider),
-        specialty: (get specialty existing-provider),
-        contact-info: (get contact-info existing-provider),
-        profile-hash: (get profile-hash existing-provider),
-        active: false,
-        created-at: (get created-at existing-provider),
-        updated-at: current-time
+        institution: (get institution credential),
+        degree: (get degree credential),
+        field: (get field credential),
+        year-completed: (get year-completed credential),
+        credential-hash: (get credential-hash credential),
+        verified: true,
+        verifier: (some verifier-id),
+        created-at: (get created-at credential),
+        verified-at: (some current-time)
       }
     )
-    (ok provider-id)
+
+    (ok true)
   )
 )
 
-;; Reactivate Provider
-(define-public (reactivate-provider)
-  (let ((provider-id tx-sender)
-        (current-time (unwrap-panic (get-block-info? time (- block-height u1))))
-        (existing-provider (unwrap! (map-get? providers {provider-id: provider-id}) (err u2)))) ;; Provider not found
-    (map-set providers
-      {provider-id: provider-id}
-      {
-        name: (get name existing-provider),
-        specialty: (get specialty existing-provider),
-        contact-info: (get contact-info existing-provider),
-        profile-hash: (get profile-hash existing-provider),
-        active: true,
-        created-at: (get created-at existing-provider),
-        updated-at: current-time
-      }
-    )
-    (ok provider-id)
-  )
+;; Get Education Credential
+(define-read-only (get-credential (provider-id principal) (credential-id uint))
+  (map-get? education-credentials {provider-id: provider-id, credential-id: credential-id})
 )
 
-;; Get Provider Details
-(define-read-only (get-provider (provider-id principal))
-  (map-get? providers {provider-id: provider-id})
+;; Get All Credentials for Provider
+(define-read-only (get-credential-count (provider-id principal))
+  (default-to {count: u0} (map-get? provider-credential-count {provider-id: provider-id}))
 )
 
-;; Check if Provider is Active
-(define-read-only (is-provider-active (provider-id principal))
-  (match (map-get? providers {provider-id: provider-id})
-    provider (ok (get active provider))
-    (err u2) ;; Provider not found
+;; Check if Credential is Verified
+(define-read-only (is-credential-verified (provider-id principal) (credential-id uint))
+  (match (map-get? education-credentials {provider-id: provider-id, credential-id: credential-id})
+    credential (ok (get verified credential))
+    (err u3) ;; Credential not found
   )
 )
